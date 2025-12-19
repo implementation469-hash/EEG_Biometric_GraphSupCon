@@ -1,55 +1,42 @@
-import os
+# src/embed_extract.py
+
 import argparse
 import numpy as np
 import torch
-from src.model_graphsupcon import GraphSupConEEGNet
+from model_graphsupcon import GraphSupConEEGNet
 
-def extract_embeddings(model, X, device, batch_size=256):
+def extract_embeddings(model, X, batch_size=256):
     model.eval()
-    E = []
+    embs = []
     with torch.no_grad():
         for i in range(0, len(X), batch_size):
-            xb = torch.from_numpy(X[i:i+batch_size]).to(device)
-            emb, _ = model(xb, return_emb=True)
-            E.append(emb.cpu().numpy())
-    return np.concatenate(E, axis=0)
+            xb = torch.tensor(X[i:i+batch_size]).float().cuda()
+            e = model(xb, return_emb=True)
+            embs.append(e.cpu().numpy())
+    return np.vstack(embs)
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--npz_path", required=True)
-    ap.add_argument("--ckpt_path", required=True)
-    ap.add_argument("--out_dir", required=True)
-    ap.add_argument("--probe_session", type=int, default=1)
-    ap.add_argument("--max_samples", type=int, default=8000)
-    args = ap.parse_args()
+def main(args):
+    data = np.load(args.npz_path)
+    X = data["X"]
 
-    os.makedirs(args.out_dir, exist_ok=True)
+    model = GraphSupConEEGNet(
+        num_channels=X.shape[1],
+        num_classes=109,
+        emb_dim=128
+    ).cuda()
 
-    data = np.load(args.npz_path, allow_pickle=True)
-    X = data["X"].astype(np.float32)
-    y_subj = data["y_subj"].astype(int)
-    y_sess = data["y_sess"].astype(int)
+    ckpt = torch.load(args.ckpt_path)
+    model.load_state_dict(ckpt["model"])
+    print("✅ Loaded checkpoint")
 
-    idx = np.where(y_sess == args.probe_session)[0]
-    if len(idx) > args.max_samples:
-        idx = np.random.choice(idx, args.max_samples, replace=False)
-
-    Xp = X[idx]
-    Yp = y_subj[idx]
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    model = GraphSupConEEGNet().to(device)
-    ckpt = torch.load(args.ckpt_path, map_location=device)
-    model.load_state_dict(ckpt["model_state_dict"], strict=True)
-
-    E = extract_embeddings(model, Xp, device)
-
-    out_path = os.path.join(args.out_dir, "stage3_embeddings_probe_session1.npz")
-    np.savez_compressed(out_path, E=E, Y=Yp, idx=idx)
-
-    print("Saved:", out_path)
-    print("E shape:", E.shape)
+    E = extract_embeddings(model, X)
+    np.save(args.out_dir + "/embeddings.npy", E)
+    print("✅ Saved embeddings:", E.shape)
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--npz_path", required=True)
+    parser.add_argument("--ckpt_path", required=True)
+    parser.add_argument("--out_dir", required=True)
+    args = parser.parse_args()
+    main(args)
